@@ -1,0 +1,208 @@
+
+data {
+  
+  vector[5] mod1_params_mean;
+  matrix[5, 5] mod1_params_Sigma;
+  
+  int<lower=0> N_mixt;
+  vector[N_mixt] elisa_mixt;
+  
+  int<lower=0> N_region;
+  array[N_mixt] int region;
+  
+  int<lower=0> N_age;
+  array[N_mixt] int age;
+  
+  matrix<lower=0, upper=1>[N_age, N_region] mat_age_times_region;
+  matrix<lower=0, upper=1>[N_region, N_age] mat_region_times_age;
+  
+  vector<lower=0, upper=1>[N_region] prop_region;
+  vector<lower=0, upper=1>[N_age] prop_age;
+  vector<lower=0, upper=1>[N_age] prop_hospit_age;
+  real<lower=0> hospit_tot;
+  vector<lower=0, upper=1>[N_age] prop_deces_age;
+  real<lower=0> deces_tot;
+  real<lower=0> pop_tot;
+  
+  int<lower=0> length_grid_sero;
+  vector[length_grid_sero] grid_sero;
+  
+}
+
+
+parameters {
+  
+  vector[N_age] log_or_age;
+  vector[N_region] intercept_region;
+  
+  real xi_uninfected;
+  real<lower=0> omega_uninfected;
+  real alpha_uninfected;
+  
+}
+
+
+transformed parameters {
+  
+  matrix<lower=0, upper=1>[N_age, N_region] incid_age_region;
+  for (i in 1:N_age) {
+    for (j in 1:N_region) {
+      incid_age_region[i, j] = inv_logit(intercept_region[j] + log_or_age[i]);
+    }
+  }
+  
+}
+
+
+model {
+  
+  log_or_age ~ normal(0, 1);
+  
+  for (n in 1:N_mixt) {
+    target += log_mix(
+      incid_age_region[age[n], region[n]],
+      log_mix(
+        mod1_params_mean[5],
+        normal_lpdf(elisa_mixt[n] | mod1_params_mean[1], mod1_params_mean[3]),
+        normal_lpdf(elisa_mixt[n] | mod1_params_mean[2], mod1_params_mean[4])
+      ),
+      skew_normal_lpdf(
+        elisa_mixt[n] | xi_uninfected, omega_uninfected, alpha_uninfected
+      )
+    );
+  }
+  
+}
+
+
+generated quantities {
+  
+  // post-stratified incidences
+  
+  vector<lower=0, upper=1>[N_age] incid_age;
+  for (i in 1:N_age) {
+    incid_age[i] = incid_age_region[i, ] * mat_region_times_age[, i];
+  }
+  
+  real<lower=0, upper=1> incid_fr_via_age = incid_age' * prop_age;
+  
+  vector<lower=0, upper=1>[N_region] incid_region;
+  for (i in 1:N_region) {
+    incid_region[i] = mat_age_times_region[, i]' * incid_age_region[, i];
+  }
+  
+  real<lower=0, upper=1> incid_fr_via_region = incid_region' * prop_region;
+  
+  // infection-outcome rates
+  
+  vector<lower=0>[N_age] ihr_age;
+  for (i in 1:N_age) {
+    ihr_age[i] = prop_hospit_age[i] / incid_age[i];
+  }
+  
+  vector<lower=0>[N_age] ifr_age;
+  for (i in 1:N_age) {
+    ifr_age[i] = prop_deces_age[i] / incid_age[i];
+  }
+  
+  real<lower=0> ihr = hospit_tot / pop_tot / incid_fr_via_age;
+  
+  real<lower=0> ifr = deces_tot / pop_tot / incid_fr_via_age;
+  
+  // diagnostic performance of the serological test
+  
+  vector[5] sample_params_mod1 = multi_normal_rng(
+    mod1_params_mean, mod1_params_Sigma
+  );
+  
+  real<lower=0, upper=1> sens08 = 1 -
+      normal_cdf(log(.8) | sample_params_mod1[1], sample_params_mod1[3]) *
+      sample_params_mod1[5] -
+      normal_cdf(log(.8) | sample_params_mod1[2], sample_params_mod1[4]) *
+      (1 - sample_params_mod1[5])
+    ;
+  
+  real<lower=0, upper=1> sens11 = 1 -
+    normal_cdf(log(1.1) | sample_params_mod1[1], sample_params_mod1[3]) *
+    sample_params_mod1[5] -
+    normal_cdf(log(1.1) | sample_params_mod1[2], sample_params_mod1[4]) *
+    (1 - sample_params_mod1[5])
+  ;
+  
+  real<lower=0, upper=1> spe08 = skew_normal_cdf(
+    log(.8) | xi_uninfected, omega_uninfected, alpha_uninfected
+  );
+  real<lower=0, upper=1> spe11 = skew_normal_cdf(
+    log(1.1) | xi_uninfected, omega_uninfected, alpha_uninfected
+  );
+    
+  real<lower=0, upper=1> younden08 = sens08 + spe08 - 1;
+  real<lower=0, upper=1> younden11 = sens11 + spe11 - 1;
+  
+  vector<lower=0, upper=1>[length_grid_sero] sens;
+  for (i in 1:length_grid_sero) {
+    sens[i] = 1 -
+      normal_cdf(grid_sero[i] | sample_params_mod1[1], sample_params_mod1[3]) *
+      sample_params_mod1[5] -
+      normal_cdf(grid_sero[i] | sample_params_mod1[2], sample_params_mod1[4]) *
+      (1 - sample_params_mod1[5])
+    ;
+  }
+  
+  vector<lower=0, upper=1>[length_grid_sero] c1_spe;
+  for (i in 1:length_grid_sero) {
+    c1_spe[i] = 1 - skew_normal_cdf(
+      grid_sero[i] | xi_uninfected, omega_uninfected, alpha_uninfected
+    );
+  }
+  
+  real<lower=0, upper=1> AUC = (sens[1] + 1)/2 * (1 - c1_spe[1]);
+  for (i in 2:length_grid_sero) {
+    AUC += (sens[i] + sens[i-1])/2 * (c1_spe[i-1] - c1_spe[i]);
+  }
+  AUC += sens[length_grid_sero]/2 * c1_spe[length_grid_sero];
+  
+  // infection probability (given serology, age and region)
+  
+  array[N_age, N_region, length_grid_sero] real pred_infection_age_region;
+  for (i in 1:N_age) {
+    for (j in 1:N_region) {
+      for (k in 1:length_grid_sero) {
+      pred_infection_age_region[i, j, k] =
+        exp(log_mix(
+          sample_params_mod1[5],
+          normal_lpdf(grid_sero[k] | sample_params_mod1[1], sample_params_mod1[3]),
+          normal_lpdf(grid_sero[k] | sample_params_mod1[2], sample_params_mod1[4])
+      )) * incid_age_region[i, j] /
+        (
+          exp(log_mix(
+            sample_params_mod1[5],
+            normal_lpdf(grid_sero[k] | sample_params_mod1[1], sample_params_mod1[3]),
+            normal_lpdf(grid_sero[k] | sample_params_mod1[2], sample_params_mod1[4])
+      )) * incid_age_region[i, j] +
+          exp(skew_normal_lpdf(
+            grid_sero[k] | xi_uninfected, omega_uninfected, alpha_uninfected)
+          ) * (1 - incid_age_region[i, j])
+        );
+      }
+    }
+  }
+  
+  // log likelihood, to compute PSIS-LOO
+  
+  vector[N_mixt] log_lik;
+  for (n in 1:N_mixt) {
+    log_lik[n] = log_mix(
+      incid_age_region[age[n], region[n]],
+      log_mix(
+        mod1_params_mean[5],
+        normal_lpdf(elisa_mixt[n] | mod1_params_mean[1], mod1_params_mean[3]),
+        normal_lpdf(elisa_mixt[n] | mod1_params_mean[2], mod1_params_mean[4])
+      ),
+      skew_normal_lpdf(
+        elisa_mixt[n] | xi_uninfected, omega_uninfected, alpha_uninfected
+      )
+    );
+  }
+  
+}
