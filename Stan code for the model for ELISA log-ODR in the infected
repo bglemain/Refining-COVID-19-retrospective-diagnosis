@@ -1,0 +1,29 @@
+
+data {
+  int<lower=0> N_pos;
+  vector[N_pos] elisa_pos;
+}
+
+
+parameters {
+  ordered[2] mu;
+  vector<lower=0>[2] sigma;
+  
+  real<lower=0, upper=1> prop_non_resp;
+}
+
+
+model {
+  
+  // implies a prior 95\% CI ranging from 1 to 40\%
+  prop_non_resp ~ beta(1.41, 8.6);
+
+  for (n in 1:N_pos) {
+    target += log_mix(
+      prop_non_resp,
+      normal_lpdf(elisa_pos[n] | mu[1], sigma[1]),
+      normal_lpdf(elisa_pos[n] | mu[2], sigma[2])
+    );
+  }
+  
+}
