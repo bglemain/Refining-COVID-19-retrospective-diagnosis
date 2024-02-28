@@ -1,0 +1,170 @@
+# First, load the libraries, specify an ELISA ODR value (in this example: 1) and a 95% confidence
+# interval for cumulative incidence (in this example: 20%-30%):
+
+library(MASS)
+library(tidyverse)
+library(sn)
+library(kableExtra)
+
+elisa_odr <- 1 ## customize this value (ELISA ODR)
+
+cuminc_low <- .2 ## customize this value
+                 ## (lower limit of the 95% confidence
+                 ## interval for cumulative incidence)
+
+cuminc_high <- .3 ## customize this value
+                  ## (higher limit of the 95% confidence
+                  ## interval for cumulative incidence)
+
+
+# Then, find a beta distribution that matches the 95% CI and check it:
+
+to_minimize <- function(param, ci_low, ci_high) {
+  abs(
+    qbeta(
+      p = .025, shape1 = param[1], shape2 = param[2]
+    ) - ci_low
+  ) + abs(
+    qbeta(
+      p = .975, shape1 = param[1], shape2 = param[2]
+    ) - ci_high
+  )
+}
+
+init_cuminc <- list(alpha = 50, beta = 50)
+
+optimized <- optim(
+  par = init_cuminc, fn = to_minimize,
+  ci_low = cuminc_low, ci_high = cuminc_high
+)
+
+## Checking that the beta distribution matches the 95% CI:
+paste("CI low:", qbeta(
+  p = .025,
+  shape1 = optimized$par[["alpha"]],
+  shape2 = optimized$par[["beta"]])
+)
+
+paste("CI high:", qbeta(
+  p = .975,
+  shape1 = optimized$par[["alpha"]],
+  shape2 = optimized$par[["beta"]])
+)
+
+# Then, store the posterior mean and covariance matrix of the distribution of
+# ELISA log-ODR in the infected, and in the uninfected:
+
+## For the multivariate normal approximation of the
+## distribution of ELISA log-ODR in the infected
+mu_infected <- c(
+  mu_non_resp = -1.3271056,
+  mu_resp = 1.0050103,
+  sigma_non_resp = 0.2675957,
+  sigma_resp = 0.7482551,
+  prop_non_resp = 0.1448567
+)
+
+Sigma_infected <- tribble(
+  ~mu_non_resp, ~mu_resp,   ~sigma_non_resp,  ~sigma_resp,  ~prop_non_resp,
+  0.00237,      0.000367,     0.000764,    -0.000335,        0.000211,
+  0.000367,     0.00244,      0.000402,    -0.000383,        0.000109,
+  0.000764,     0.000402,     0.00178,     -0.000394,        0.000217,
+  -0.000335,   -0.000383,    -0.000394,     0.00152,        -0.000151,
+  0.000211,     0.000109,     0.000217,    -0.000151,        0.000456
+) |> 
+  as.matrix()
+
+## For the multivariate normal approximation of the
+## distribution of ELISA log-ODR in the uninfected
+mu_uninfected <- c(
+  xi_uninf = -1.6621785,
+  omega_uninf = 0.4745875,
+  alpha_uninf = 2.5055857 
+)
+
+Sigma_uninfected <- tribble(
+  ~xi_uninf,         ~omega_uninf,     ~alpha_uninf,
+  3.514406e-06,      -3.187074e-06,    -4.373939e-05,
+  -3.187074e-06,     5.042344e-06,     5.060927e-05,
+  -4.373939e-05,     5.060927e-05,     9.138356e-04
+) |> 
+  as.matrix()
+
+
+# Then, create a function to draw a set of parameters (from a multivariate
+# normal distribution) and to compute the infection probability accordingly:
+
+draw_prob_infected <- function(
+    elisa_odr, cuminc_alpha, cuminc_beta,
+    mu_infected, Sigma_infected,
+    mu_uninfected, Sigma_uninfected
+) {
+  
+  cuminc <- rbeta(n = 1, shape1 = cuminc_alpha, shape2 = cuminc_beta)
+  params_infected <- mvrnorm(n = 1, mu = mu_infected, Sigma = Sigma_infected)
+  params_uninfected <- mvrnorm(n = 1, mu = mu_uninfected, Sigma = Sigma_uninfected)
+  
+  log_odr <- log(elisa_odr)
+  
+  lik_infected <-
+    dnorm(
+      log_odr,
+      params_infected[["mu_non_resp"]],
+      params_infected[["sigma_non_resp"]]
+    ) *
+    params_infected[["prop_non_resp"]] +
+    dnorm(
+      log_odr,
+      params_infected[["mu_resp"]],
+      params_infected[["sigma_resp"]]
+    ) *
+    (1 - params_infected[["prop_non_resp"]])
+  
+  lik_uninfected <- dsn(
+    log_odr,
+    xi = params_uninfected[["xi_uninf"]],
+    omega = params_uninfected[["omega_uninf"]],
+    alpha = params_uninfected[["alpha_uninf"]]
+  )
+  
+  tibble(
+    elisa_odr = elisa_odr,
+    prob_infected = lik_infected * cuminc /
+    (lik_infected * cuminc + lik_uninfected * (1 - cuminc))
+  )
+  
+}
+
+
+# Finally, compute the infection probability for 1,000 sets of
+# parameters, and compute the mean posterior and 95%&nbsp;CI from these values:
+
+draws_prob_infected <- map_dfr(
+  1:1e3,
+  ~ draw_prob_infected(
+    elisa_odr = elisa_odr,
+    cuminc_alpha = optimized$par[["alpha"]], cuminc_beta = optimized$par[["beta"]],
+    mu_infected = mu_infected, Sigma_infected = Sigma_infected,
+    mu_uninfected = mu_uninfected, Sigma_uninfected = Sigma_uninfected 
+  )
+)
+
+draws_prob_infected |> 
+  summarise(
+    mean = mean(prob_infected),
+    q2.5 = quantile(prob_infected, .025),
+    q97.5 = quantile(prob_infected, .975),
+    .by = elisa_odr
+  ) |> 
+  mutate(
+    cuminc_low = cuminc_low,
+    cuminc_high = cuminc_high,
+    .before = elisa_odr
+  ) |> 
+  kable(
+    caption = "Infection probability given an
+    ELISA ODR value and a cumulative incidence 95% CI"
+  )
+
+
+
