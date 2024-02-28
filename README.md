@@ -2,8 +2,7 @@
 
 This repository contains the code associated with the study "Refining COVID-19 retrospective diagnosis with continuous serological tests: a Bayesian mixture model" (Glemain et al., submitted).
 
-Link to the article :
-
+Link to the article : (to come)
 
 This repository contains three files :  
 -- The reusable R code to estimate infection probaility after the first wave, given an ELISA ODR value (Euroimmun anti-S1 IgG) and a cumulative incidence estimate (a 95% CI)  
