@@ -1,6 +1,6 @@
-# Refining-COVID-19-retrospective-diagnosis
+# Estimating SARS-CoV-2 infection probabilities with serological data and a Bayesian mixture model
 
-This repository contains the code associated with the study "Refining COVID-19 retrospective diagnosis with continuous serological tests: a Bayesian mixture model" (Glemain et al., submitted).
+This repository contains the code associated with the study "Estimating SARS-CoV-2 infection probabilities with serological data and a Bayesian mixture model" (Glemain et al., submitted).
 
 Link to the article : (to come)
 
